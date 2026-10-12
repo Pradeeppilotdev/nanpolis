@@ -1,0 +1,95 @@
+{
+  "chain": "monad",
+  "signalSource": "REST POST https://api.nansen.ai/api/v1/tgm/flow-intelligence (timeframe param)",
+  "endpoint": "https://api.nansen.ai/api/v1/tgm/flow-intelligence",
+  "costPerCall": 1,
+  "signalFields": [
+    "smart_trader",
+    "top_pnl",
+    "whale"
+  ],
+  "windowModel": "explicit REST timeframe (default 6h = 21600s). The nansen CLI cannot set it, so the decision path calls the REST endpoint directly.",
+  "windowModelNote": "nansen-cli v1.21.0 src/api.js:1047-1058 tokenFlowIntelligence() sends ONLY {token_address, chain}; it never forwards --days/timeframe. Verified by direct raw-HTTP call: sending `date` or `days` returns 422 unknown_field. The endpoint's `timeframe` enum is 5m|1h|6h|12h|1d|7d with default `1d`. Docs do not state whether the 1d bucket is rolling or calendar-aligned to UTC; this has NOT been verified and must be measured, not assumed.",
+  "excludedFields": {
+    "exchange": "exchange/cex flow is not smart-money distribution",
+    "fresh_wallets": "fresh wallets are not smart money",
+    "public_figure": "removed from decision logic per owner instruction"
+  },
+  "decision": {
+    "netFlowUsd": "sum of net_flow_usd across signalFields",
+    "distributionUsd": "floor(max(0, -(sum of net_flow_usd)))",
+    "minWalletCount": 2,
+    "minWalletCountRule": "sum of *_wallet_count across signalFields must be >= 2, else token is skipped as unusable",
+    "thresholdRule": "thresholdUsd is owner-set from recorded data only; never tuned to force a trip"
+  },
+  "tokens": [
+    {
+      "symbol": "WMON",
+      "token": "0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A",
+      "signalChain": "monad",
+      "executionChain": "monad",
+      "note": "guardToken and signalToken are the same asset; policy is live on-chain",
+      "role": "vault",
+      "canTrigger": true,
+      "decimals": 18,
+      "tokenType": "WMON"
+    },
+    {
+      "symbol": "FOLKS",
+      "token": "0xFF7F8F301F7A706E3CfD3D2275f5dc0b9EE8009B",
+      "signalChain": "monad",
+      "executionChain": "monad",
+      "note": "only token with a live smart_trader cohort on Monad",
+      "role": "observational",
+      "canTrigger": false,
+      "decimals": 18,
+      "tokenType": "WMON"
+    },
+    {
+      "symbol": "WETH",
+      "token": "0xEE8c0E9f1BFFb4Eb878d8f15f368A02a35481242",
+      "signalChain": "monad",
+      "executionChain": "monad",
+      "note": "live top_pnl segment",
+      "role": "observational",
+      "canTrigger": false,
+      "decimals": 18,
+      "tokenType": "WMON"
+    },
+    {
+      "symbol": "cbBTC",
+      "token": "0xd18B7EC58Cdf4876f6AFebd3Ed1730e4Ce10414b",
+      "signalChain": "monad",
+      "executionChain": "monad",
+      "role": "observational",
+      "canTrigger": false,
+      "note": "Coinbase Wrapped BTC, 8 decimals, EIP-1967 proxy (impl 0xd1611e6e93ec512bfbd2b6428a26c463c1dce6f9, admin 0x035b83fdb45e155eb72121a414ee2f1356be51a4, owner 0x0c43bb1A15A1FF1CbDdFF2B8F9518C1B0d3B17E2). Observational only - not purchased, not deposited, must never drive a trigger.",
+      "decimals": 8,
+      "tokenType": "cbBTC"
+    }
+  ],
+  "fieldDefinitions": {
+    "<seg>_net_flow_usd": "Net flow (USD) for addresses in that label segment.",
+    "<seg>_wallet_count": "Unique wallet count for that segment.",
+    "<seg>_avg_flow_usd": "Geometric mean of ABSOLUTE flow for that segment. By definition avg*count != net_flow, so no reconciliation is expected.",
+    "exchange_wallet_count": "Always 0 - exchange wallet count is not tracked, even when exchange net flow is non-zero.",
+    "fresh_wallets_*": "Only available for 1d and 7d timeframes."
+  },
+  "source": "docs.nansen.ai/api/token-god-mode/flow-intelligence",
+  "vaultTokens": {
+    "WMON": "0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A"
+  },
+  "timeframe": {
+    "default": "6h",
+    "seconds": 21600,
+    "supported": [
+      "5m",
+      "1h",
+      "6h",
+      "12h",
+      "1d",
+      "7d"
+    ],
+    "note": "Sent as the `timeframe` field of POST /api/v1/tgm/flow-intelligence. `date` and `days` are rejected 422 unknown_field; `timeframe` is accepted. The nansen CLI (v1.21.0, src/api.js:1047-1058) never forwards a timeframe, so REST is used for the decision path and the CLI is kept for probing."
+  }
+}

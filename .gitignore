@@ -1,0 +1,32 @@
+node_modules/
+.env
+out/
+cache/
+logs/
+broadcast/
+*.log
+.DS_Store
+
+# key material / secrets - never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+keystore/
+deployments/*.private.json
+web/dist/
+agent/dist/
+
+# forge deps are reproducible via `forge install`
+lib/
+
+# Raw recorded Nansen responses: NOT all published.
+# Only fixtures/_sample/* and fixtures/_evidence/* (the exact files hashed into
+# on-chain Protected events) are committed.
+fixtures/**
+!fixtures/_sample/
+!fixtures/_evidence/
+!fixtures/_sample/**
+!fixtures/_evidence/**

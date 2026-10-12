@@ -1,0 +1,32 @@
+{
+  "chainId": 143,
+  "chainName": "Monad Mainnet",
+  "rpc": "https://rpc.monad.xyz",
+  "exitGuard": "0x921621dC0de402adB75a84479046e5150c5a10D5",
+  "explorer": "https://monadvision.com",
+  "monadscan": "https://monadscan.com",
+  "links": {
+    "exitGuardMonadVision": "https://monadvision.com/address/0x921621dC0de402adB75a84479046e5150c5a10D5",
+    "exitGuardMonadscan": "https://monadscan.com/address/0x921621dC0de402adB75a84479046e5150c5a10D5",
+    "exitGuardSourcifyJob": "https://sourcify-api-monad.blockvision.org/v2/verify/c27bb8b3-fe37-478c-983e-c008ad2a745d"
+  },
+  "verification": {
+    "verifier": "sourcify",
+    "verifierUrl": "https://sourcify-api-monad.blockvision.org/",
+    "matchId": "2049113",
+    "match": "exact_match",
+    "creationMatch": "exact_match",
+    "runtimeMatch": "exact_match",
+    "verifiedAt": "2026-10-12T07:41:53Z"
+  },
+  "wallets": {
+    "deployer": "0x027b756B9B411c2838926534b3D5e119B8De8f2e",
+    "agent": "0x68a691c461c54CE767C6d539022fa344397b9f31"
+  },
+  "asset": {
+    "symbol": "WMON",
+    "token": "0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A",
+    "decimals": 18,
+    "note": "Canonical Wrapped MON on Monad mainnet. deposit() wraps native MON."
+  }
+}
