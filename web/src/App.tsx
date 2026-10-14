@@ -708,7 +708,7 @@ export default function App() {
         <div className="brand">
           <Mark />
           <div>
-            <h1>Exit Guard</h1>
+            <h1>Nanpolis</h1>
             <p>Smart-money exit protection for your WMON</p>
           </div>
         </div>
