@@ -4,7 +4,6 @@ import {
   http,
   keccak256,
   parseAbi,
-  hex,
   type Address,
   type PublicClient,
   type WalletClient,
@@ -58,7 +57,8 @@ export async function getPolicy(
   owner: Address,
   token: Address,
 ): Promise<Policy> {
-  const p = (await client.readContract({
+  const rpc = client as unknown as { readContract: (a: Record<string, unknown>) => Promise<unknown> };
+  const p = (await rpc.readContract({
     address: exitGuard,
     abi: EXITGUARD_ABI,
     functionName: "policies",
@@ -151,32 +151,4 @@ export async function sendProtect(args: {
   return { txHash: hash, blockNumber: receipt.blockNumber };
 }
 
-export function protectedEventsFromLog(logs: readonly any[], exitGuard: Address) {
-  return logs
-    .filter((l) => l.address.toLowerCase() === exitGuard.toLowerCase())
-    .flatMap((l) => {
-      try {
-        const p = argsToEvent(l);
-        return p ? [p] : [];
-      } catch {
-        return [];
-      }
-    });
-}
 
-import { parseEventLogs } from "viem";
-function argsToEvent(log: any) {
-  const [ev] = parseEventLogs({
-    abi: EXITGUARD_ABI,
-    eventName: "Protected",
-    logs: [
-      {
-        address: log.address,
-        topics: log.topics,
-        data: log.data,
-      },
-    ],
-    strict: false,
-  });
-  return ev?.args;
-}

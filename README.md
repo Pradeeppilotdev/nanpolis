@@ -102,11 +102,14 @@ decision each one feeds.
 
 ## Signal window
 
-The signal window is the endpoint's **default `timeframe` of `1d`**. `nansen-cli` v1.21.0 never
-forwards `--days` to this endpoint (verified in `src/api.js:1047-1058` and by direct raw-HTTP
-request). **Whether that `1d` bucket is rolling or calendar-aligned to UTC is not specified in the
-docs and has not been verified** — see `logs/recorder.log` for the measured behaviour around the
-00:00 UTC boundary. The on-chain `windowSecs = 86400` matches one `1d` bucket in duration.
+`nansen-cli` v1.21.0 never forwards a window to this endpoint (verified in
+`src/api.js:1047-1058` and by direct raw-HTTP request), so the project sends it explicitly as
+the `timeframe` field of the REST request. The signal window used by the agent is **`6h`
+(21600s)**, explicitly chosen and sent on every call; `1d` (86400s) is merely the endpoint's
+default when `timeframe` is omitted and is **not** what this system runs on. The on-chain
+`windowSecs = 21600` matches one `6h` bucket in duration, and the agent refuses to trigger if a
+recorded `timeframeSeconds` differs from the policy's `windowSecs`. Late-day / 00:00 UTC bucket
+behaviour is tracked per-recorded-response in the `.meta.json` sidecars.
 
 ---
 

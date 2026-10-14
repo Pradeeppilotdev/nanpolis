@@ -12,6 +12,7 @@ import {
 } from "./guard.ts";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+fs.mkdirSync(path.join(ROOT, "logs"), { recursive: true });
 const CFG = JSON.parse(fs.readFileSync(path.join(ROOT, "agent", "config.json"), "utf8"));
 const DEP = JSON.parse(fs.readFileSync(path.join(ROOT, "deployments.json"), "utf8"));
 
@@ -87,6 +88,7 @@ async function runOnce() {
     const files = fs
       .readdirSync(dir)
       .filter((f) => f.endsWith(`_${t.symbol}.json`) && !f.endsWith(".meta.json"))
+      .filter((f) => fs.existsSync(path.join(dir, f.replace(/\.json$/, ".meta.json"))))
       .sort();
     if (!files.length) {
       log(`${label} no recorded response yet - skipping`);
@@ -166,7 +168,8 @@ async function runOnce() {
       );
       continue;
     }
-    const balance = (await client.readContract({
+    const rpc = client as unknown as { readContract: (a: Record<string, unknown>) => Promise<unknown> };
+    const balance = (await rpc.readContract({
       address: EXITGUARD,
       abi: EXITGUARD_ABI,
       functionName: "deposits",

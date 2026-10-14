@@ -84,10 +84,12 @@ so **`--days` is never sent**. Verified two ways:
    `422 {"code":"unknown_field","param":"date"}`
 2. Direct raw HTTP with `... ,"days":1}` → `422 {"code":"unknown_field","param":"days"}`
 
-**Consequence:** the signal window is the endpoint's **default `timeframe`**, documented as
-`"1d"`. Per the schema: `timeframe` enum is `["5m","1h","6h","12h","1d","7d"]`, `default: "1d"`.
-It is **not** a rolling 24h window and it is **not owner-configurable through the CLI**.
-The on-chain `windowSecs = 86400` was chosen to match one `1d` bucket.
+**Consequence:** `--days` is therefore a no-op and the CLI cannot control the window at all.
+The agent instead sends `timeframe` explicitly in the REST body. It runs on **`6h`
+(21600s)** by default (`NANSEN_TIMEFRAME` overrides it; valid values are `5m|1h|6h|12h|1d|7d`),
+and `1d` (86400s) is only the endpoint's default when `timeframe` is omitted. The on-chain
+`windowSecs = 21600` was chosen to match one `6h` bucket, and the agent enforces the match
+before triggering.
 
 ### Field definitions (quoted from docs.nansen.ai/api/token-god-mode/flow-intelligence)
 

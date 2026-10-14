@@ -9,7 +9,7 @@
     "whale"
   ],
   "windowModel": "explicit REST timeframe (default 6h = 21600s). The nansen CLI cannot set it, so the decision path calls the REST endpoint directly.",
-  "windowModelNote": "nansen-cli v1.21.0 src/api.js:1047-1058 tokenFlowIntelligence() sends ONLY {token_address, chain}; it never forwards --days/timeframe. Verified by direct raw-HTTP call: sending `date` or `days` returns 422 unknown_field. The endpoint's `timeframe` enum is 5m|1h|6h|12h|1d|7d with default `1d`. Docs do not state whether the 1d bucket is rolling or calendar-aligned to UTC; this has NOT been verified and must be measured, not assumed.",
+  "windowModelNote": "nansen-cli v1.21.0 src/api.js:1047-1058 tokenFlowIntelligence() sends ONLY {token_address, chain}; it never forwards --days/timeframe. Verified by direct raw-HTTP call: sending `date` or `days` returns 422 unknown_field; sending `timeframe` is accepted. The agent therefore sends `timeframe` explicitly in the REST body (default 6h) and binds every decision to the timeframeSeconds recorded in the fixture's .meta.json sidecar.",
   "excludedFields": {
     "exchange": "exchange/cex flow is not smart-money distribution",
     "fresh_wallets": "fresh wallets are not smart money",
