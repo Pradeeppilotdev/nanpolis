@@ -126,10 +126,9 @@ const CopyIcon = () => (
   </svg>
 );
 const Mark = () => (
-  <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
-    <rect width="30" height="30" rx="9" fill="var(--violet)" />
-    <path d="M6 20c3-1 5-6 9-6s6 5 9 6" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
-    <path d="M6 11h18" stroke="var(--amber)" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="1 4.2" />
+  <svg className="brand-mark" width="36" height="36" viewBox="0 0 40 40" aria-hidden="true">
+    <path d="M3 33V7h7l17 19V7h10v26h-7L13 14v19Z" fill="currentColor" />
+    <path d="M27 3h10v2H27Z" fill="currentColor" opacity=".45" />
   </svg>
 );
 
@@ -752,7 +751,7 @@ export default function App() {
 
       <section className="page-intro" id="overview">
         <div><p className="eyebrow"><span /> THE INTELLIGENCE LAYER</p><h2>Stay ahead.<br /><span>Stay in control.</span></h2><p className="intro-copy">Follow smart money. Monitor exposure. Keep the exit rules yours.</p></div>
-        <div className="protocol-stamp" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" /><div className="orbit-core">N<span>143</span></div><span className="orbit-label">MONAD / EXIT GUARD</span></div>
+        <div className="protocol-stamp" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" /><div className="orbit-core"><Mark /><span>143</span></div><span className="orbit-label">MONAD / EXIT GUARD</span></div>
       </section>
       <div className="metrics-strip">
         <div><span>MONITORED POSITION</span><strong>{state ? formatUnits(state.deposit, 18) : "—"}<small>WMON</small></strong><p>On-chain vault balance</p></div>
