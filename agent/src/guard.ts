@@ -91,6 +91,7 @@ export function simulateProtect(
   token: Address,
   opts: { distributionUsd: number; windowSecs: number; configuredBps: number; now: number; balance: bigint },
 ): Decision {
+  if (!Number.isSafeInteger(opts.distributionUsd) || opts.distributionUsd < 0 || !Number.isInteger(opts.configuredBps) || opts.configuredBps < 1 || opts.configuredBps > 10000) return { ok: false, reason: "Invalid distribution or configured bps" };
   if (policy.guard === "0x0000000000000000000000000000000000000000")
     return { ok: false, reason: "guard revoked on-chain (guard == address(0))" };
   if (policy.guard.toLowerCase() !== agentAddress.toLowerCase())
@@ -139,6 +140,11 @@ export async function sendProtect(args: {
   windowSecs: number;
   evidenceHash: `0x${string}`;
 }): Promise<{ txHash: `0x${string}`; blockNumber: bigint }> {
+  await args.client.simulateContract({
+    address: args.exitGuard, abi: EXITGUARD_ABI, functionName: "protect",
+    args: [args.owner, args.token, args.bps, BigInt(args.distributionUsd), args.windowSecs, args.evidenceHash],
+    account: args.wallet.account!,
+  });
   const hash = await args.wallet.writeContract({
     address: args.exitGuard,
     abi: EXITGUARD_ABI,
@@ -148,6 +154,7 @@ export async function sendProtect(args: {
     account: args.wallet.account!,
   } as any);
   const receipt = (await args.client.waitForTransactionReceipt({ hash })) as any;
+  if (receipt.status !== "success") throw new Error(`Protection transaction reverted: ${hash}`);
   return { txHash: hash, blockNumber: receipt.blockNumber };
 }
 

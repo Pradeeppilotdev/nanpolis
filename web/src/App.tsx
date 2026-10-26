@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { formatUnits, zeroAddress } from "viem";
-import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { monad } from "./chains";
-import { AGENT, EXITGUARD, EXPLORER, OWNER, readVault, type VaultState } from "./chain";
+import { AGENT, ASSET, EXITGUARD, EXPLORER, OWNER, readVault, type VaultState } from "./chain";
 
 /* ------------------------------------------------------------------ types */
 
@@ -11,6 +10,7 @@ type Tok = {
   symbol: string;
   token: string;
   role?: string;
+  recordedAt?: string;
   canTrigger?: boolean;
   segments?: Record<string, Seg>;
   netFlowUsd?: number;
@@ -22,6 +22,9 @@ type Tok = {
 };
 type Latest = {
   generatedAt: string;
+  mode?: string;
+  demo?: boolean;
+  note?: string;
   timeframe: string;
   timeframeSeconds: number | null;
   signalFields: string[];
@@ -74,31 +77,30 @@ const ago = (ms: number) => {
   return `${Math.floor(m / 60)} h ${m % 60} min ago`;
 };
 
-const copy = (s: string) => {
-  try {
-    navigator.clipboard?.writeText(s);
-  } catch {
-    /* clipboard unavailable */
-  }
-};
-
-function usePoll<T>(url: string, ms: number): T | null {
+function usePoll<T>(url: string, ms: number) {
   const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    const load = () =>
-      fetch(url)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => alive && d && setData(d))
-        .catch(() => {});
-    load();
-    const t = setInterval(load, ms);
-    return () => {
-      alive = false;
-      clearInterval(t);
+    const controller = new AbortController();
+    let pending = false;
+    const load = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+        if (!response.ok) throw new Error(response.status === 503 ? "No recordings yet. Start the recorder and decision loop." : `Agent request failed (${response.status}).`);
+        const value = await response.json();
+        if (alive) { setData(value); setError(null); }
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : "Agent unavailable");
+      } finally { pending = false; }
     };
+    void load();
+    const timer = setInterval(load, ms);
+    return () => { alive = false; controller.abort(); clearInterval(timer); };
   }, [url, ms]);
-  return data;
+  return { data, error };
 }
 
 function useNow(ms = 15000) {
@@ -135,17 +137,18 @@ const Mark = () => (
 
 function CopyChip({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
+  const [failed, setFailed] = useState(false);
   return (
     <button
       className="chip-btn"
       aria-label={label}
-      onClick={() => {
-        copy(text);
-        setDone(true);
-        setTimeout(() => setDone(false), 1400);
+      onClick={async () => {
+        try { await navigator.clipboard.writeText(text); setDone(true); setFailed(false); }
+        catch { setFailed(true); }
+        setTimeout(() => { setDone(false); setFailed(false); }, 1400);
       }}
     >
-      {done ? "Copied" : <CopyIcon />}
+      {done ? "Copied" : failed ? "Copy failed" : <CopyIcon />}
     </button>
   );
 }
@@ -175,12 +178,14 @@ function Tripwire({
   latest,
   maxMove,
   coolMin,
+  unavailable,
 }: {
   vault: Tok | undefined;
   state: VaultState | null;
   latest: Latest | null;
   maxMove: string | null;
   coolMin: number;
+  unavailable: string | null;
 }) {
   const thr = state?.policy.thresholdUsd ?? 0;
   const dist = vault?.distributionUsd ?? 0;
@@ -189,15 +194,16 @@ function Tripwire({
   const scaleMax = Math.max(thr * 2.2, dist * 1.12, 500);
   const fillPct = Math.min((dist / scaleMax) * 100, 100);
   const thrPct = Math.min((thr / scaleMax) * 100, 100);
-  const tfWords = TF_WORDS[latest?.timeframe ?? ""] ?? latest?.timeframe ?? "";
+  const tfWords = latest?.timeframe && latest.timeframe !== "unknown" ? TF_WORDS[latest.timeframe] ?? latest.timeframe : null;
   const segs = latest?.signalFields ?? ["smart_trader", "top_pnl", "whale"];
   const segMax = Math.max(1000, ...segs.map((s) => Math.abs(vault?.segments?.[s]?.netFlowUsd ?? 0)));
 
   let status = { cls: "wait", text: "Waiting for first reading" };
-  if (vault && !vault.usable) status = { cls: "wait", text: "Not enough wallets to judge" };
-  else if (vault && over && coolMin > 0) status = { cls: "cool", text: "Over your line, paused" };
-  else if (vault && over) status = { cls: "over", text: "Over your line" };
-  else if (vault) status = { cls: "under", text: "Under your line" };
+  if (unavailable) status = { cls: "wait", text: unavailable };
+  else if (vault && !vault.usable) status = { cls: "wait", text: "Not enough wallets to judge" };
+  else if (vault && over && coolMin > 0) status = { cls: "cool", text: "Over the policy line, paused" };
+  else if (vault && over) status = { cls: "over", text: "Over the policy line" };
+  else if (vault) status = { cls: "under", text: "Under the policy line" };
 
   let headline: ReactNode;
   if (!vault) {
@@ -206,17 +212,17 @@ function Tripwire({
     headline = (
       <>
         Only {vault.walletCountSum ?? 0} smart {vault.walletCountSum === 1 ? "wallet" : "wallets"} traded WMON in the
-        last {tfWords}. The guard needs {latest?.minWalletCount ?? 2} before it will judge.
+        recorded sample{tfWords ? ` (last ${tfWords})` : " (window unavailable)"}. The guard needs {latest?.minWalletCount ?? 2} before it will judge.
       </>
     );
   } else if (net < 0) {
     headline = (
       <>
-        Smart wallets net sold <b className="n-neg">{usd(dist)}</b> of WMON in the last {tfWords}.
+        Smart wallets net sold <b className="n-neg">{usd(dist)}</b> of WMON {tfWords ? `over the last ${tfWords}` : "in this recorded sample (window unavailable)"}.
         {thr > 0 && (
           <>
             {" "}
-            Your line is <b className="n-amber">{usd(thr)}</b>.
+            Policy line is <b className="n-amber">{usd(thr)}</b>.
           </>
         )}
       </>
@@ -224,7 +230,7 @@ function Tripwire({
   } else {
     headline = (
       <>
-        Smart wallets net bought <b className="n-pos">{usd(net)}</b> of WMON in the last {tfWords}. Your line is{" "}
+        Smart wallets net bought <b className="n-pos">{usd(net)}</b> of WMON {tfWords ? `over the last ${tfWords}` : "in this recorded sample (window unavailable)"}. Policy line is{" "}
         <b className="n-amber">{usd(thr)}</b> of selling.
       </>
     );
@@ -251,12 +257,12 @@ function Tripwire({
         </div>
         {thr > 0 && (
           <div className="meter-line" style={{ left: `${thrPct}%` }}>
-            <span className={`meter-line-label ${thrPct < 12 ? "al-left" : ""}`}>Your line {usd(thr)}</span>
+            <span className={`meter-line-label ${thrPct < 12 ? "al-left" : ""}`}>Policy line {usd(thr)}</span>
           </div>
         )}
         {vault && (
           <div className="meter-now" style={{ left: `${labelLeft}%` }}>
-            <span>Now {usd(dist)}</span>
+            <span>{latest?.demo || latest?.mode === "REPLAY" ? "Recorded" : "Latest"} {usd(dist)}</span>
           </div>
         )}
         <div className="meter-scale">
@@ -268,7 +274,7 @@ function Tripwire({
       <div className="segs">
         <div className="segs-head">
           <span>Who is moving</span>
-          <span>Net flow, last {tfWords}</span>
+          <span>{tfWords ? `Net flow, last ${tfWords}` : "Recorded net flow · window unavailable"}</span>
         </div>
         {segs.map((s) => {
           const g = vault?.segments?.[s];
@@ -277,7 +283,7 @@ function Tripwire({
             <div className={`seg ${empty ? "idle" : ""}`} key={s}>
               <div className="seg-name">
                 {SEG_NAMES[s] ?? s}
-                <small>{empty ? "no wallets active" : `${g.walletCount} ${g.walletCount === 1 ? "wallet" : "wallets"}`}</small>
+                <small>{!g ? "no reading available" : empty ? "no wallets active" : `${g.walletCount} ${g.walletCount === 1 ? "wallet" : "wallets"}`}</small>
               </div>
               <DivBar value={empty ? 0 : g.netFlowUsd} scale={segMax} />
               <div className={`seg-val ${!empty && g.netFlowUsd < 0 ? "n-neg" : !empty && g.netFlowUsd > 0 ? "n-pos" : ""}`}>
@@ -292,12 +298,12 @@ function Tripwire({
         {coolMin > 0 ? (
           <>
             The agent is paused for <b>{coolMin} more min</b> after its last trigger. When the pause ends it can act again
-            if selling is still over your line.
+            if all signal and policy checks pass.
           </>
         ) : state && maxMove ? (
           <>
-            If the agent triggers, it can move at most <b>{maxMove} WMON</b> ({state.policy.maxBps / 100}% of your
-            vault) to your safe address {short(state.policy.safeAddr)}, and only inside the rules on the right.
+            If the agent triggers, it can move at most <b>{maxMove} WMON</b> ({state.policy.maxBps / 100}% of the
+            vault) to the owner’s safe address {short(state.policy.safeAddr)}, and only inside the rules on the right.
           </>
         ) : (
           <>The policy loads from the contract.</>
@@ -328,16 +334,19 @@ function VaultPanel({
   const fmt = (v: bigint) => (+formatUnits(v, dec)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
   const p = state?.policy;
 
-  let next = "Ready";
+  let next = "Cooldown elapsed";
   if (p && p.lastTrigger > 0) {
     const ready = (p.lastTrigger + p.cooldownSecs) * 1000;
-    next = now >= ready ? "Ready" : `Paused for ${Math.ceil((ready - now) / 60000)} more min`;
+    next = now >= ready ? "Cooldown elapsed" : `Paused for ${Math.ceil((ready - now) / 60000)} more min`;
   }
+
+  if (p?.guard === zeroAddress) next = "Guard revoked";
+  else if (state && dep === 0n) next = "No deposit";
 
   return (
     <aside className="panel vault" aria-labelledby="v-title">
       <div className="panel-head">
-        <h2 id="v-title">Your vault</h2>
+        <h2 id="v-title">Monitored vault</h2>
         <a className="ext" href={`${EXPLORER}/address/${EXITGUARD}`} target="_blank" rel="noreferrer">
           Contract <Ext />
         </a>
@@ -352,7 +361,7 @@ function VaultPanel({
           <span style={{ width: `${dep + moved > 0n ? Number((moved * 10000n) / (dep + moved)) / 100 : 0}%` }} />
         </div>
         <div className="vs-text">
-          <span>Moved to safety so far</span>
+          <span>Moved in recorded transactions</span>
           <b>{fmt(moved)} WMON</b>
         </div>
       </div>
@@ -379,7 +388,7 @@ function VaultPanel({
           <dd>{p ? (p.lastTrigger === 0 ? "Never" : new Date(p.lastTrigger * 1000).toLocaleString()) : "\u2026"}</dd>
         </div>
         <div>
-          <dt>Next trigger</dt>
+          <dt>Cooldown status</dt>
           <dd>{p ? next : "\u2026"}</dd>
         </div>
       </dl>
@@ -410,7 +419,7 @@ function ProtectionLog({ protections, decimals }: { protections: Prot[]; decimal
     <section className="panel log" aria-labelledby="log-title">
       <div className="panel-head">
         <h2 id="log-title">Protection log</h2>
-        <span className="muted">{list.length === 0 ? "Nothing has fired yet" : `${list.length} on record`}</span>
+        <span className="muted">{list.length === 0 ? "No recorded transactions" : `${list.length} on record`}</span>
       </div>
 
       {list.length === 0 ? (
@@ -421,7 +430,7 @@ function ProtectionLog({ protections, decimals }: { protections: Prot[]; decimal
             <path d="M10 15h24" stroke="var(--amber)" strokeWidth="2" strokeLinecap="round" strokeDasharray="1 5" />
           </svg>
           <p>
-            When selling pressure crosses your line and the agent acts, the transaction appears here with the exact
+            When selling pressure crosses the policy line and the agent acts, the transaction appears here with the exact
             Nansen response that justified it.
           </p>
         </div>
@@ -434,7 +443,7 @@ function ProtectionLog({ protections, decimals }: { protections: Prot[]; decimal
               <li key={p.txHash} className="event">
                 <div className="ev-main">
                   <div className="ev-amount">
-                    <b>{amt}</b> {p.symbol} moved to your safe address
+                    <b>{amt}</b> {p.symbol} moved to the owner’s safe address
                   </div>
                   <div className="ev-facts">
                     <span>{new Date(p.at).toLocaleString()}</span>
@@ -486,7 +495,7 @@ function niceTicks(min: number, max: number, n = 5) {
   return out;
 }
 
-function HistoryChart({ points, thr, tfWords }: { points: Pt[]; thr: number; tfWords: string }) {
+function HistoryChart({ points, thr, tfWords, historical }: { points: Pt[]; thr: number; tfWords: string | null; historical: boolean }) {
   const W = 900,
     H = 290,
     L = 58,
@@ -523,13 +532,13 @@ function HistoryChart({ points, thr, tfWords }: { points: Pt[]; thr: number; tfW
   if (!geo) {
     return (
       <div className="chart-empty">
-        <p>Collecting readings. The line draws itself as the agent polls Nansen every few minutes.</p>
+        <p>{historical ? "No comparable historical series is available for these samples." : "At least two comparable readings are needed to draw a chart. Start the recorder to collect data."}</p>
       </div>
     );
   }
 
   const last = points.length - 1;
-  const hi = hover ?? last;
+  const hi = Math.min(hover ?? last, last);
   const hp = { x: geo.xs[hi], y: geo.ys[hi], v: geo.vs[hi], t: geo.ts[hi] };
   const tipLeft = (hp.x / W) * 100;
 
@@ -553,7 +562,7 @@ function HistoryChart({ points, thr, tfWords }: { points: Pt[]; thr: number; tfW
 
   return (
     <div className="chart" ref={ref} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Net smart-money flow for WMON over the last ${tfWords}, sampled every few minutes`}>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Recorded net smart-money flow for WMON${tfWords ? `, each reading covers ${tfWords}` : ", signal window unavailable"}`}>
         <defs>
           <linearGradient id="gNeg" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stopColor="var(--neg)" stopOpacity="0.06" />
@@ -593,7 +602,7 @@ function HistoryChart({ points, thr, tfWords }: { points: Pt[]; thr: number; tfW
             <line x1={L} x2={W - R} y1={thrY} y2={thrY} className="thr-line" />
             <rect x={W - R - 148} y={thrY - 23} width="148" height="20" rx="10" className="thr-pill" />
             <text x={W - R - 74} y={thrY - 9} textAnchor="middle" className="thr-text">
-              Your line {"\u2212"}{usd(thr)}
+              Policy line {"\u2212"}{usd(thr)}
             </text>
           </g>
         )}
@@ -624,7 +633,9 @@ function Watchlist({ tokens, minWallets }: { tokens: Tok[]; minWallets: number }
         <span className="muted">No position, never triggers</span>
       </div>
       <ul>
+        {tokens.length === 0 && <li className="muted">No watchlist readings available yet.</li>}
         {tokens.map((t) => {
+          const hasReading = Number.isFinite(t.netFlowUsd) && Number.isFinite(t.walletCountSum);
           const n = t.netFlowUsd ?? 0;
           const w = t.walletCountSum ?? 0;
           return (
@@ -632,13 +643,13 @@ function Watchlist({ tokens, minWallets }: { tokens: Tok[]; minWallets: number }
               <div className="w-name">
                 <b>{t.symbol}</b>
                 <small>
-                  {w} {w === 1 ? "wallet" : "wallets"}
+                  {hasReading ? `${w} ${w === 1 ? "wallet" : "wallets"}` : "No reading"}
                 </small>
               </div>
-              <DivBar value={n} scale={max} />
+              {hasReading ? <DivBar value={n} scale={max} /> : <span />}
               <div className="w-val">
-                <span className={n < 0 ? "n-neg" : n > 0 ? "n-pos" : ""}>{usdSigned(n)}</span>
-                <small className={t.usable ? "ok" : "warnt"}>{t.usable ? "Counted" : `Needs ${minWallets}, has ${w}`}</small>
+                <span className={n < 0 ? "n-neg" : n > 0 ? "n-pos" : ""}>{hasReading ? usdSigned(n) : "Unavailable"}</span>
+                <small className={t.usable ? "ok" : "warnt"}>{!hasReading ? t.skipReason ?? "No data" : t.usable ? "Counted" : `Needs ${minWallets}, has ${w}`}</small>
               </div>
             </li>
           );
@@ -651,50 +662,49 @@ function Watchlist({ tokens, minWallets }: { tokens: Tok[]; minWallets: number }
 /* ------------------------------------------------------------------ app */
 
 export default function App() {
-  const { isConnected, address } = useAccount();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
   const now = useNow();
 
-  const latest = usePoll<Latest>("/api/latest", 10000);
-  const protections = usePoll<Prot[]>("/api/protections", 10000) ?? [];
-  const hist = usePoll<{ series: Record<string, Pt[]> }>("/api/history", 30000);
+  const { data: latest, error: agentError } = usePoll<Latest>("/api/latest", 10000);
+  const { data: protectionData, error: protectionError } = usePoll<Prot[]>("/api/protections", 10000);
+  const protections = protectionData ?? [];
+  const { data: hist, error: historyError } = usePoll<{ series: Record<string, Pt[]> }>("/api/history", 30000);
 
-  const vault = latest?.tokens.find((t) => t.canTrigger === true);
-  const watch = (latest?.tokens ?? []).filter((t) => t.canTrigger !== true);
+  const vault = latest?.tokens.find((t) => t.token.toLowerCase() === ASSET.toLowerCase());
+  const watch = (latest?.tokens ?? []).filter((t) => t.token !== vault?.token);
 
   const [state, setState] = useState<VaultState | null>(null);
   const [chainErr, setChainErr] = useState<string | null>(null);
   useEffect(() => {
-    if (!vault) return;
     let alive = true;
-    readVault(vault.token)
+    const load = () => readVault(vault?.token ?? ASSET)
       .then((s) => {
         if (alive) {
           setState(s);
           setChainErr(null);
         }
       })
-      .catch((e) => alive && setChainErr(e?.shortMessage ?? e?.message ?? "chain read failed"));
-    return () => {
-      alive = false;
-    };
-  }, [vault?.token, latest?.generatedAt]);
+      .catch((e) => { if (alive) { setState(null); setChainErr(e?.shortMessage ?? e?.message ?? "chain read failed"); } });
+    void load();
+    const timer = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [vault?.token]);
 
   // History: server series if available, else build it from this session's polls.
-  const session = useRef<Pt[]>([]);
+  const [session, setSession] = useState<Pt[]>([]);
   useEffect(() => {
     if (!vault || !latest) return;
-    const last = session.current[session.current.length - 1];
-    if (!last || last.t !== latest.generatedAt) {
-      session.current = [...session.current, { t: latest.generatedAt, netFlowUsd: vault.netFlowUsd ?? 0 }].slice(-200);
-    }
+    if (!Number.isFinite(vault.netFlowUsd)) return;
+    setSession((previous) => {
+      const last = previous[previous.length - 1];
+      return last?.t === latest.generatedAt ? previous : [...previous, { t: latest.generatedAt, netFlowUsd: vault.netFlowUsd! }].slice(-200);
+    });
   }, [latest?.generatedAt]);
-  const series = (vault && hist?.series?.[vault.symbol]) || session.current;
+  const series = latest?.demo ? [] : (vault && hist?.series?.[vault.symbol]) || session;
 
-  const ageMs = latest ? now - new Date(latest.generatedAt).getTime() : 0;
-  const stale = !!latest && ageMs > 20 * 60000;
-  const tfWords = TF_WORDS[latest?.timeframe ?? ""] ?? latest?.timeframe ?? "";
+  const ageMs = latest ? now - new Date(vault?.recordedAt ?? latest.generatedAt).getTime() : 0;
+  const stale = !!latest && (!Number.isFinite(ageMs) || ageMs < -60000 || ageMs > 20 * 60000);
+  const unavailable = latest?.demo ? "Historical sample — no execution" : agentError ? "Agent unavailable" : stale ? "Stale reading — paused" : !state ? "Policy unavailable" : state.policy.guard === zeroAddress ? "Guard revoked" : state.deposit === 0n ? "No deposited position" : latest?.timeframeSeconds !== state.policy.windowSecs ? "Signal window mismatch" : null;
+  const tfWords = latest?.timeframe && latest.timeframe !== "unknown" ? TF_WORDS[latest.timeframe] ?? latest.timeframe : null;
 
   const coolMin = state && state.policy.lastTrigger > 0
     ? Math.max(0, Math.ceil(((state.policy.lastTrigger + state.policy.cooldownSecs) * 1000 - now) / 60000))
@@ -709,7 +719,7 @@ export default function App() {
           <Mark />
           <div>
             <h1>Nanpolis</h1>
-            <p>Smart-money exit protection for your WMON</p>
+            <p>Smart-money monitoring and exit protection</p>
           </div>
         </div>
         <div className="top-right">
@@ -718,26 +728,24 @@ export default function App() {
             {monad.name} mainnet
           </span>
           <span className={`pill ${stale ? "warn" : ""}`} title="The agent skips readings older than 20 minutes">
-            <i className={stale ? "dot-warn" : "dot-live"} />
+            <i className={stale || !latest || agentError ? "dot-warn" : "dot-live"} />
             {latest ? (stale ? `Nansen read ${ago(ageMs)} (stale)` : `Nansen read ${ago(ageMs)}`) : "Waiting for agent"}
           </span>
-          {isConnected ? (
-            <button className="btn" onClick={() => disconnect()}>
-              {address?.slice(0, 6)}&hellip;{address?.slice(-4)}
-            </button>
-          ) : (
-            <button className="btn ghost" onClick={() => connectors[0] && connect({ connector: connectors[0] })}>
-              Connect wallet
-            </button>
-          )}
+
         </div>
       </header>
 
+      <p className="context-note">Read-only dashboard · Owner <a href={`${EXPLORER}/address/${OWNER}`} target="_blank" rel="noreferrer">{short(OWNER)}</a> · {latest?.mode ? `${latest.mode} mode` : "Execution mode unknown"}. This dashboard does not request wallet access.</p>
+      {latest?.note && <p className="banner">{latest.note}</p>}
+      {!latest?.note && latest?.mode !== "LIVE" && <p className="banner">{latest?.mode === "REPLAY" ? "Historical replay: no transactions are sent." : "Live execution is not confirmed. The dashboard does not send transactions."}</p>}
+      {agentError && <p className="banner" role="status">Agent unavailable: {agentError} Start the agent API with the configured PORT. Any retained readings are historical.</p>}
+      {protectionError && <p className="banner">Protection history unavailable. Displayed totals may be incomplete.</p>}
+      {historyError && <p className="banner">Chart history unavailable. Showing readings collected in this browser session.</p>}
       {chainErr && <p className="banner">Could not read the contract: {chainErr}</p>}
 
       <main>
         <div className="row hero-row">
-          <Tripwire vault={vault} state={state} latest={latest} maxMove={maxMove} coolMin={coolMin} />
+          <Tripwire vault={vault} state={state} latest={latest} maxMove={maxMove} coolMin={coolMin} unavailable={unavailable} />
           <VaultPanel vault={vault} state={state} protections={protections} now={now} />
         </div>
 
@@ -758,15 +766,14 @@ export default function App() {
                 </span>
                 <span>
                   <i className="lg line" />
-                  Your line
+                  Policy line
                 </span>
               </div>
             </div>
             <p className="muted sub">
-              Each point is one Nansen reading covering the previous {tfWords}. Below zero means smart wallets are net
-              sellers.
+              {tfWords ? `Each point is one Nansen reading covering the previous ${tfWords}.` : "The historical samples have no verified signal window."} Below zero means smart wallets are net sellers.
             </p>
-            <HistoryChart points={series} thr={state?.policy.thresholdUsd ?? 0} tfWords={tfWords} />
+            <HistoryChart points={series} thr={state?.policy.thresholdUsd ?? 0} tfWords={tfWords} historical={!!latest?.demo || latest?.mode === "REPLAY"} />
           </section>
 
           <Watchlist tokens={watch} minWallets={latest?.minWalletCount ?? 2} />

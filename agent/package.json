@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "probe": "tsx src/probe.ts",
-    "record": "tsx src/recorder.ts",
-    "loop": "tsx src/loop.ts",
-    "loop:replay": "MODE=REPLAY tsx src/loop.ts",
-    "api": "tsx src/api.ts"
+    "probe": "node --import tsx src/probe.ts",
+    "record": "node --import tsx src/recorder.ts",
+    "loop": "node --import tsx src/loop.ts",
+    "loop:replay": "node --import tsx src/replay.ts",
+    "api": "node --import tsx src/api.ts",
+    "replay": "node --import tsx src/replay.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

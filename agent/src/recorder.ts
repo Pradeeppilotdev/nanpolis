@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { decide } from "./signal.ts";
 import path from "node:path";
 import {
   flowIntelligenceREST,
@@ -43,6 +44,8 @@ async function pollOnce() {
 
   const latest: any = {
     generatedAt: now.toISOString(),
+    mode: (process.env.MODE ?? "DRY_RUN").toUpperCase(),
+    demo: false,
     timeframe: TIMEFRAME,
     timeframeSeconds: TIMEFRAME_SECONDS[TIMEFRAME] ?? null,
     bucketDateUtc: day,
@@ -87,7 +90,8 @@ async function pollOnce() {
     const row = ok ? parseFlowIntelligence(raw) : null;
     if (!row) {
       latest.tokens.push({
-        symbol: t.symbol,
+        recordedAt: now.toISOString(),
+      symbol: t.symbol,
         token: t.token,
         role: t.role,
         canTrigger: t.canTrigger ?? false,
@@ -102,21 +106,11 @@ async function pollOnce() {
       continue;
     }
 
-    const segments: Record<string, { netFlowUsd: number; walletCount: number }> = {};
-    let netFlowSum = 0;
-    let walletSum = 0;
-    for (const f of SIGNAL_FIELDS) {
-      const nf = typeof row[`${f}_net_flow_usd`] === "number" ? row[`${f}_net_flow_usd`] : 0;
-      const wc = typeof row[`${f}_wallet_count`] === "number" ? row[`${f}_wallet_count`] : 0;
-      segments[f] = { netFlowUsd: nf, walletCount: wc };
-      netFlowSum += nf;
-      walletSum += wc;
-    }
-
-    const distributionUsd = Math.floor(Math.max(0, -netFlowSum));
-    const usable = walletSum >= MIN_WALLETS;
+    const decision = decide(row, SIGNAL_FIELDS, MIN_WALLETS);
+    const { segments, netFlowUsd: netFlowSum, walletCountSum: walletSum, distributionUsd, usable } = decision;
 
     latest.tokens.push({
+      recordedAt: now.toISOString(),
       symbol: t.symbol,
       token: t.token,
       role: t.role,
@@ -134,7 +128,7 @@ async function pollOnce() {
       walletCountSum: walletSum,
       minWalletCount: MIN_WALLETS,
       usable,
-      skipReason: usable ? null : `walletCountSum ${walletSum} < minWalletCount ${MIN_WALLETS}`,
+      skipReason: decision.skipReason,
       rawFile: `fixtures/${rawName}`,
       logFile: `logs/poll/${rawName}`,
     });
@@ -148,13 +142,16 @@ async function pollOnce() {
     );
   }
 
-  fs.writeFileSync(latestFile, JSON.stringify(latest, null, 2));
+  fs.writeFileSync(latestFile + ".tmp", JSON.stringify(latest, null, 2));
+  fs.renameSync(latestFile + ".tmp", latestFile);
 }
 
 log(
   `recorder start interval=${intervalSec}s timeframe=${TIMEFRAME} tokens=${CFG.tokens.length} fields=${SIGNAL_FIELDS.join("+")} minWalletCount=${MIN_WALLETS} source=REST`,
 );
+if (!Number.isFinite(intervalSec) || intervalSec < 1 || !TIMEFRAME_SECONDS[TIMEFRAME]) throw new Error("Invalid interval or timeframe");
 await pollOnce();
-setInterval(() => {
-  pollOnce().catch((e) => log(`poll error: ${e?.message ?? e}`));
-}, intervalSec * 1000);
+while (process.env.ONE_SHOT !== "1") {
+  await new Promise(resolve => setTimeout(resolve, intervalSec * 1000));
+  try { await pollOnce(); } catch (e: any) { log(`poll error: ${e?.message ?? e}`); }
+}

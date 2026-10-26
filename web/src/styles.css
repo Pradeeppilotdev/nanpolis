@@ -886,3 +886,12 @@ footer {
     transition: none !important;
   }
 }
+
+.context-note { color: var(--muted); font-size: 13px; margin: -8px 0 16px; overflow-wrap: anywhere; }
+.btn:disabled { opacity: .6; cursor: wait; }
+.cmd code, details small { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .panel-head { flex-wrap: wrap; }
+  .top-right { gap: 8px; }
+  .legend { gap: 10px; }
+}

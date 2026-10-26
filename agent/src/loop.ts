@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { decide, validateFixture } from "./signal.ts";
+import { TIMEFRAME_SECONDS, parseFlowIntelligence } from "./nansen.ts";
 import path from "node:path";
 import { parseEventLogs, type Address } from "viem";
 import {
@@ -17,9 +19,11 @@ const CFG = JSON.parse(fs.readFileSync(path.join(ROOT, "agent", "config.json"), 
 const DEP = JSON.parse(fs.readFileSync(path.join(ROOT, "deployments.json"), "utf8"));
 
 const MODE = (process.env.MODE ?? "DRY_RUN").toUpperCase(); // LIVE | DRY_RUN | REPLAY
+if (!["LIVE", "DRY_RUN", "REPLAY"].includes(MODE)) throw new Error(`Invalid MODE: ${MODE}`);
 const ONE_SHOT = process.env.ONE_SHOT === "1";
 const INTERVAL = Number(process.env.POLL_INTERVAL_SECONDS ?? 300);
 const MAX_FIXTURE_AGE_MS = Number(process.env.MAX_FIXTURE_AGE_MINUTES ?? 20) * 60_000;
+if (!Number.isFinite(INTERVAL) || INTERVAL < 1 || !Number.isFinite(MAX_FIXTURE_AGE_MS) || MAX_FIXTURE_AGE_MS <= 0) throw new Error("Invalid polling interval or fixture age");
 const SIGNAL_FIELDS: string[] = CFG.signalFields;
 const MIN_WALLETS: number = CFG.decision.minWalletCount;
 
@@ -43,33 +47,10 @@ function logFile(line: string) {
   fs.appendFileSync(path.join(ROOT, "logs", "decision.log"), `${new Date().toISOString()} ${tag}${line}\n`);
 }
 
-/** Identical decision math for every mode. Pure function of a parsed Nansen row. */
-function decide(row: Record<string, number>, meta: { bucket: string }) {
-  const segments: Record<string, { netFlowUsd: number; walletCount: number }> = {};
-  let netFlowSum = 0;
-  let walletSum = 0;
-  for (const f of SIGNAL_FIELDS) {
-    const nf = typeof row[`${f}_net_flow_usd`] === "number" ? row[`${f}_net_flow_usd`] : 0;
-    const wc = typeof row[`${f}_wallet_count`] === "number" ? row[`${f}_wallet_count`] : 0;
-    segments[f] = { netFlowUsd: nf, walletCount: wc };
-    netFlowSum += nf;
-    walletSum += wc;
-  }
-  return {
-    bucketDateUtc: meta.bucket,
-    signalFields: SIGNAL_FIELDS,
-    segments,
-    netFlowUsd: netFlowSum,
-    distributionUsd: Math.floor(Math.max(0, -netFlowSum)),
-    walletCountSum: walletSum,
-    minWalletCount: MIN_WALLETS,
-    usable: walletSum >= MIN_WALLETS,
-  };
-}
-
 async function runOnce() {
   const client = publicClient();
-  const block = await client.getBlockNumber();
+  const block = await client.getBlock();
+  if (await client.getChainId() !== DEP.chainId) throw new Error("RPC chain does not match deployment");
 
   for (const t of CFG.tokens) {
     const vaultOnly = t.canTrigger === true;
@@ -111,6 +92,8 @@ async function runOnce() {
       log(`${label} SKIP: unreadable .meta.json sidecar (${path.basename(metaFile)})`);
       continue;
     }
+    const invalid = validateFixture(meta, t, TIMEFRAME_SECONDS, Date.now(), MAX_FIXTURE_AGE_MS);
+    if (invalid) { log(`${label} SKIP: ${invalid}`); continue; }
     const fixtureTimeframe: string = meta.timeframe;
     const fixtureWindowSecs: number = meta.timeframeSeconds;
     if (typeof fixtureWindowSecs !== "number") {
@@ -120,7 +103,7 @@ async function runOnce() {
 
     // Staleness guard: never act on an old reading. Applies in EVERY mode,
     // including DRY_RUN and REPLAY-with-live-files, and is required for LIVE.
-    const ageMs = Date.now() - fs.statSync(rawAbs).mtimeMs;
+    const ageMs = Date.now() - Date.parse(meta.recordedAt);
     const ageMin = ageMs / 60_000;
     if (ageMs > MAX_FIXTURE_AGE_MS) {
       log(
@@ -138,14 +121,14 @@ async function runOnce() {
       continue;
     }
     // REST shape is { data: [row] }; older CLI fixtures are { data: { data: [row] } }.
-    const row = parsed?.data?.data?.[0] ?? (Array.isArray(parsed?.data) ? parsed.data[0] : null);
+    const row = parseFlowIntelligence(raw);
     if (!row) {
       log(`${label} empty Nansen row - skipped, never faked`);
       continue;
     }
 
     const bucket = files[files.length - 1].slice(0, 8);
-    const d = decide(row, { bucket });
+    const d = { ...decide(row, SIGNAL_FIELDS, MIN_WALLETS), bucketDateUtc: bucket };
 
     const segStr = SIGNAL_FIELDS.map(
       (f) => `${f}=${d.segments[f].netFlowUsd.toFixed(2)}/${d.segments[f].walletCount}w`,
@@ -155,7 +138,7 @@ async function runOnce() {
     );
 
     if (!d.usable) {
-      log(`${label} SKIP: walletCountSum ${d.walletCountSum} < minWalletCount ${MIN_WALLETS}`);
+      log(`${label} SKIP: ${d.skipReason}`);
       continue;
     }
 
@@ -175,7 +158,7 @@ async function runOnce() {
       functionName: "deposits",
       args: [OWNER, t.token as Address],
     })) as bigint;
-    const now = Math.floor(Date.now() / 1000);
+    const now = Number(block.timestamp);
 
     log(
       `${label} POLICY guard=${policy.guard} safe=${policy.safeAddr} threshold=${policy.thresholdUsd} window=${policy.windowSecs}s maxBps=${policy.maxBps} cooldown=${policy.cooldownSecs}s lastTrigger=${policy.lastTrigger} | deposit=${balance}`,
@@ -204,6 +187,16 @@ async function runOnce() {
 
     if (MODE === "LIVE") {
       const wallet = agentWallet();
+      if (wallet.account?.address.toLowerCase() !== AGENT.toLowerCase()) throw new Error("Signing account does not match configured guard");
+      // Persist the evidence file alongside the tx that consumed it, and record
+      // the protection so the UI never has to scan chain history.
+      const evidenceDir = path.join(ROOT, "fixtures", "_evidence");
+      ensureDirLocal(evidenceDir);
+      const evidenceCopy = path.join("fixtures", "_evidence", path.basename(rawFile));
+      fs.copyFileSync(path.join(ROOT, rawFile), path.join(ROOT, evidenceCopy));
+      const metaCopy = path.join("fixtures", "_evidence", path.basename(metaFile));
+      fs.copyFileSync(metaFile, path.join(ROOT, metaCopy));
+
       const { txHash, blockNumber } = await sendProtect({
         wallet,
         client,
@@ -231,15 +224,6 @@ async function runOnce() {
           `${label} PROTECTED event amountMoved=${a.amountMoved} bps=${a.bps} distributionUsd=${a.distributionUsd} windowSecs=${a.windowSecs} evidenceHash=${a.evidenceHash}`,
         );
       }
-
-      // Persist the evidence file alongside the tx that consumed it, and record
-      // the protection so the UI never has to scan chain history.
-      const evidenceDir = path.join(ROOT, "fixtures", "_evidence");
-      ensureDirLocal(evidenceDir);
-      const evidenceCopy = path.join("fixtures", "_evidence", path.basename(rawFile));
-      fs.copyFileSync(path.join(ROOT, rawFile), path.join(ROOT, evidenceCopy));
-      const metaCopy = path.join("fixtures", "_evidence", path.basename(metaFile));
-      fs.copyFileSync(metaFile, path.join(ROOT, metaCopy));
 
       const protectionsFile = path.join(ROOT, "logs", "protections.json");
       let protections: any[] = [];
@@ -271,7 +255,8 @@ async function runOnce() {
         at: new Date().toISOString(),
         mode: MODE,
       });
-      fs.writeFileSync(protectionsFile, JSON.stringify(protections, null, 2));
+      fs.writeFileSync(protectionsFile + ".tmp", JSON.stringify(protections, null, 2));
+      fs.renameSync(protectionsFile + ".tmp", protectionsFile);
       log(
         `${label} recorded -> logs/protections.json ; evidence copied -> ${evidenceCopy} + ${path.basename(metaCopy)}`,
       );
@@ -296,4 +281,7 @@ if (ONE_SHOT) {
   log("ONE_SHOT done");
   process.exit(0);
 }
-setInterval(() => runOnce().catch((e) => log(`loop error: ${e?.message ?? e}`)), INTERVAL * 1000);
+while (true) {
+  await new Promise(resolve => setTimeout(resolve, INTERVAL * 1000));
+  try { await runOnce(); } catch (e: any) { log(`loop error: ${e?.message ?? e}`); }
+}

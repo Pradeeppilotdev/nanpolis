@@ -1,0 +1,17 @@
+{
+  "name": "nanpolis",
+  "private": true,
+  "version": "0.2.0",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "setup": "npm --prefix agent ci && npm --prefix web ci",
+    "dev": "node scripts/dev.mjs",
+    "dev:live": "node scripts/dev.mjs --live-data",
+    "test": "npm --prefix agent test",
+    "typecheck": "npm --prefix agent run typecheck && npm --prefix web run typecheck",
+    "build": "npm --prefix web run build",
+    "check": "npm run typecheck && npm test && npm run build",
+    "test:contracts": "forge test -vv",
+    "replay": "npm --prefix agent run replay"
+  }
+}

@@ -64,6 +64,7 @@ export function flowIntelligenceREST(
   token: string,
   timeframe: string = TIMEFRAME,
 ): FlowResult {
+  if (!TIMEFRAME_SECONDS[timeframe]) throw new Error(`Unsupported timeframe: ${timeframe}`);
   const body = JSON.stringify({ token_address: token, chain, timeframe });
   let raw = "";
   try {
@@ -71,6 +72,9 @@ export function flowIntelligenceREST(
       "curl",
       [
         "-sS",
+        "--fail-with-body",
+        "--connect-timeout", "10",
+        "--max-time", "45",
         "-X",
         "POST",
         "https://api.nansen.ai/api/v1/tgm/flow-intelligence",
@@ -85,6 +89,7 @@ export function flowIntelligenceREST(
     );
   } catch (e: any) {
     raw = e?.stdout?.toString() ?? "";
+    return { raw, ok: false, timeframe, error: "Nansen request failed (HTTP or network error)" };
   }
   let parsed: any = null;
   try {
@@ -93,8 +98,8 @@ export function flowIntelligenceREST(
   if (parsed && parsed.error) {
     return { raw, ok: false, timeframe, error: parsed.message ?? parsed.error, code: parsed.code };
   }
-  if (parsed && !Array.isArray(parsed.data)) {
-    return { raw, ok: false, timeframe, error: "unexpected response shape", code: parsed.code };
+  if (!parsed || !Array.isArray(parsed.data)) {
+    return { raw, ok: false, timeframe, error: "unexpected response shape", code: parsed?.code };
   }
   return { raw, ok: true, timeframe };
 }
@@ -149,7 +154,8 @@ export function parseFlowIntelligence(raw: string): Record<string, any> | null {
     // CLI shape: { success, data: { data: [row] } }
     // REST shape: { data: [row] }
     const row = j?.data?.data?.[0] ?? (Array.isArray(j?.data) ? j.data[0] : null);
-    return row ?? null;
+    if (j?.success === false || j?.error) return null;
+    return row && typeof row === "object" && !Array.isArray(row) ? row : null;
   } catch {
     return null;
   }

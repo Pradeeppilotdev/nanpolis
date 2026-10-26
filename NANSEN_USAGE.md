@@ -1,3 +1,5 @@
+> Historical research notes from the original implementation. Commands, prices, balances, cohort counts, and API behavior described below are observations from that work, not current guarantees. Use [README.md](./README.md) for the maintained setup, replay, validation, and deployment workflow. Published samples lack timeframe sidecars and cannot establish live trigger eligibility.
+
 # NANSEN_USAGE.md — every Nansen call this project makes
 
 All data comes from the **Nansen CLI v1.21.0** (`nansen-cli`), executed as a subprocess.

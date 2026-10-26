@@ -1,278 +1,124 @@
-# Smart Money Exit Guard
+# Nanpolis — Smart Money Exit Guard
 
-An off-chain agent watches **Nansen smart-money distribution** for a token on Monad. When
-distribution crosses an owner-defined threshold inside the owner-defined window, the agent calls
-`protect()` on the Monad contract, which moves a capped share of the owner's deposited position
-to the owner's safe address.
+Nanpolis watches Nansen flow intelligence for WMON on Monad and shows the signal beside an owner's on-chain protection policy. An off-chain agent can transfer a capped percentage of deposited tokens to the owner's configured safe address when its signal meets that policy.
 
-**The contract enforces the policy on-chain.** The agent cannot move more than `maxBps`, cannot
-act on a different window, cannot trigger twice inside `cooldownSecs`, and cannot send funds
-anywhere except the owner's `safeAddr`. The agent is a trigger, not a custodian.
+**A transfer to a safe address does not sell, hedge, or remove token price exposure.** The contract trusts the designated guard's reported distribution figure. The evidence hash is an audit commitment, not an oracle proof.
 
-Every trigger commits a `keccak256` hash of the exact raw Nansen JSON response that justified it,
-so the decision is provable against the source data after the fact.
+## Run locally
 
----
+Requires Node.js 22.12+ and npm. From the repository root:
+
+```bash
+npm run setup
+npm run dev
+```
+
+Open the Vite URL printed in the terminal (normally http://127.0.0.1:5173). This starts the API and dashboard in **historical demo mode**, using the committed Nansen samples. It needs no key and sends no transactions. Historical samples do not establish current conditions, and their original timeframe metadata was not committed.
+
+```bash
+npm run replay          # offline historical signal calculations, no policy execution
+npm run check           # agent + web types, agent tests, production web build
+```
+
+The API listens on `127.0.0.1:8791`. Vite proxies `/api` to it. Stop both services with Ctrl+C.
+
+## Live data and dry-run decisions
+
+```bash
+cp .env.example .env
+# Set NANSEN_API_KEY and MONAD_RPC_URL in .env.
+npm run dev:live
+```
+
+This starts the recorder, API, and web app. Recording consumes Nansen API credits. It does **not** start the transaction loop. To evaluate a fresh recorded response against the configured on-chain policy:
+
+```bash
+cd agent
+MODE=DRY_RUN ONE_SHOT=1 npm run loop
+```
+
+Run the loop without `ONE_SHOT=1` to continue polling. `MODE=LIVE` enables signing and submission and requires the designated agent's private key. Keep the default dry-run mode until the deployment, policy, safe address, and signer have been independently checked. No live transaction was sent as part of completing this repository.
+
+Only tokens marked `canTrigger: true` in `agent/config.json` may trigger. Other assets are observational. RPC failures, missing or stale data, invalid metadata, and unusable cohorts must not become positive protection decisions.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph offchain["Off-chain agent (Node/TypeScript)"]
-        N["Nansen API<br/>tgm/flow-intelligence<br/>1 credit/poll"]
-        R["recorder<br/>writes raw JSON to fixtures/"]
-        S["signal<br/>netFlowSum = smart_trader + top_pnl + whale<br/>distributionUsd = floor(max(0, -netFlow))"]
-        D{"decision<br/>usable? >= 2 wallets<br/>stale? < 20 min"}
-        G["guard.ts<br/>reads Policy, simulates protect()<br/>bps = min(config, maxBps)<br/>evidenceHash = keccak256(raw file)"]
-    end
-
-    subgraph chain["Monad mainnet (chain id 143)"]
-        E["ExitGuard.sol<br/>Policy per owner per token<br/>thresholdUsd, windowSecs,<br/>maxBps, cooldownSecs, safeAddr"]
-        W["WMON position<br/>(2 WMON deposited)"]
-        S2["safeAddr<br/>(deployer EOA)"]
-    end
-
-    N --> R --> S --> D --> G
-    G -- "protect(owner, token, bps,<br/>distributionUsd, windowSecs, evidenceHash)" --> E
-    E --> W
-    E -- "moves bps slice" --> S2
-    E -- "Protected event<br/>+ evidenceHash" --> X["MonadVision"]
+  N[Nansen flow-intelligence] --> R[Recorder]
+  R --> F[Raw JSON + metadata]
+  F --> A[Decision loop]
+  A --> P[Read policy and simulate]
+  P -->|LIVE only| C[ExitGuard contract]
+  C --> S[Owner's safe address]
+  R --> API[Local read-only API]
+  API --> UI[React dashboard]
+  C --> UI
 ```
 
----
+- `src/`, `test/`, `script/`: Solidity vault, regression tests, deployment script.
+- `agent/`: REST recording, validation, policy checks, transaction submission, replay, HTTP API.
+- `web/`: React/Vite read-only dashboard with on-chain reads.
+- `fixtures/_sample/`: original historical Nansen responses.
+- `fixtures/_evidence/`: exact raw files committed by protection event hashes when generated.
+- `deployments.json`: historical deployment record; it is not proof of current balance or policy.
 
-## Why Monad
+## Signal and trust model
 
-Monad is used here as **cheap, final execution** — not as a real-time signal source.
+The recorder sends an explicit `timeframe` (default `6h`, 21600 seconds) to `POST /api/v1/tgm/flow-intelligence`. The decision sums `smart_trader`, `top_pnl`, and `whale` net flows:
 
-- `protect()` is a single state-changing call with a capped transfer, so cost and finality matter
-  and nothing else does.
-- The signal itself arrives **off-chain from Nansen**. Nothing on Monad is read to make the
-  decision, and the chain is not expected to produce the signal faster.
-- A fast finality chain means the protective transfer settles promptly once the agent decides, so
-  funds are not left exposed between decision and settlement.
-
-**Honest caveat:** the practical latency of this system is dominated by the Nansen data refresh,
-not by Monad. Nansen documents that **responses are cached 10–30 minutes** depending on
-timeframe, and that recent (~24h) data is live while older data comes from an hourly batch that
-can lag up to an hour. This system is a *distribution* detector on that cadence, not a
-sub-second market maker.
-
----
-
-## Deployed addresses (Monad mainnet, chain id 143)
-
-| | |
-|---|---|
-| ExitGuard | `0x921621dC0de402adB75a84479046e5150c5a10D5` |
-| Guarded asset | WMON `0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A` (canonical Wrapped MON) |
-| Deposit | 2 WMON (18 decimals) |
-| Policy | threshold $1000 · window 21600s (6h) · maxBps 2500 · cooldown 3600s |
-| Owner / safeAddr | `0x027b756B9B411c2838926534b3D5e119B8De8f2e` |
-| Agent / guard | `0x68a691c461c54CE767C6d539022fa344397b9f31` |
-| Explorer | https://monadvision.com/address/0x921621dC0de402adB75a84479046e5150c5a10D5 |
-| Verification | Sourcify `exact_match` (creation + runtime), job `c27bb8b3-fe37-478c-983e-c008ad2a745d` |
-
-Full details in [`deployments.json`](./deployments.json).
-
----
-
-## The signal
-
-Endpoint: **`POST /api/v1/tgm/flow-intelligence`** (1 credit/call), via
-`nansen research token flow-intelligence --chain monad --token <token>`.
-
-Segments used for the decision — `smart_trader`, `top_pnl`, `whale`:
-
-```
-netFlowUsd      = smart_trader_net_flow_usd + top_pnl_net_flow_usd + whale_net_flow_usd
+```text
+netFlowUsd      = sum(segment net_flow_usd)
 distributionUsd = floor(max(0, -netFlowUsd))
-usable          = (sum of *_wallet_count) >= 2
+usable          = sum(segment wallet_count) >= 2
 ```
 
-Deliberately **excluded** from decisions: `exchange` (CEX flow is not smart-money distribution),
-`fresh_wallets` (not smart money), `public_figure`.
+Segment counts are summed, **not deduplicated across cohorts**. Flows may likewise overlap between labels. This heuristic must not be interpreted as a unique-wallet count or an independently verified total market outflow. Exchange, fresh-wallet, and public-figure segments are excluded.
 
-Tokens that return no usable data are **skipped, never faked**.
+The fixture's recorded timeframe must match the owner's on-chain window. Freshness is bounded by the recorder timestamp; repeated or cached upstream data can still be older than the fetch. Nansen cadence and cohort quality constrain the usefulness of the signal.
 
-See [`NANSEN_USAGE.md`](./NANSEN_USAGE.md) for every command, every field consumed, and which
-decision each one feeds.
+On-chain policy limits the guard's authority through `maxBps`, `cooldownSecs`, `safeAddr`, and owner revocation. These are **per-trigger bounds**: repeated triggers can move most of the remaining deposit over time. The guard cannot redirect the destination, but a compromised guard can report false distribution and trigger early. The safe address receives the same token, so market-price exposure remains.
 
----
+`evidenceHash` is `keccak256` of the exact response bytes, not reserialized JSON. Matching a hash proves which bytes were committed, not that Nansen produced them or that the number was truthful.
 
-## Signal window
+## Contracts
 
-`nansen-cli` v1.21.0 never forwards a window to this endpoint (verified in
-`src/api.js:1047-1058` and by direct raw-HTTP request), so the project sends it explicitly as
-the `timeframe` field of the REST request. The signal window used by the agent is **`6h`
-(21600s)**, explicitly chosen and sent on every call; `1d` (86400s) is merely the endpoint's
-default when `timeframe` is omitted and is **not** what this system runs on. The on-chain
-`windowSecs = 21600` matches one `6h` bucket in duration, and the agent refuses to trigger if a
-recorded `timeframeSeconds` differs from the policy's `windowSecs`. Late-day / 00:00 UTC bucket
-behaviour is tracked per-recorded-response in the `.meta.json` sidecars.
-
----
-
-## Setup
+Install [Foundry](https://getfoundry.sh/introduction/installation/), then:
 
 ```bash
-# 1. contracts
-forge install foundry-rs/forge-std
-forge test                       # 8 tests, all must pass
-
-# 2. env
-cp .env.example .env
-#   NANSEN_API_KEY=...
-#   DEPLOYER_PRIVATE_KEY=...    owner + safeAddr
-#   AGENT_PRIVATE_KEY=...       guard only
-#   MONAD_RPC_URL=https://rpc.monad.xyz
-```
-
-Note: the `nansen` CLI reads `NANSEN_API_KEY` from the environment, **not** from a project `.env`.
-The agent loads `.env` into the process environment before shelling out.
-
-```bash
-# 3. agent
-cd agent && npm install
-npm run probe        # find tokens with real smart-money activity (1 credit each)
-npm run record       # background recorder, writes raw Nansen JSON to fixtures/ and logs/poll/
-npm run loop         # decision loop (MODE=DRY_RUN default)
-
-# 4. frontend
-cd ../web && npm install && npm run dev
-# needs the agent api serving logs/latest.json
-cd ../agent && npm run api      # http://127.0.0.1:8791/api/latest
-```
-
-### Modes
-
-| Mode | Nansen cost | Sends tx | Use |
-|---|---|---|---|
-| `DRY_RUN` | 0 (reads fixtures) | no | default; verifies the decision path |
-| `REPLAY` | 0 | no | runs identical logic over recorded real responses |
-| `LIVE` | 0 (reads fixtures) | yes | only after threshold is set and owner approves |
-
-Safety guards that apply in **every** mode: fixture staleness > 20 min → skip; wallet count
-below 2 → skip; any `protect()` revert condition → skip locally before spending gas.
-
----
-
-## Trust assumptions (read this before judging the design)
-
-**The contract does not verify the Nansen number.** `protect()` accepts a
-`distributionUsd` value supplied by the caller and compares it against the owner's
-`thresholdUsd`. Nothing on-chain re-derives that figure from Nansen, and it cannot: Nansen data
-is off-chain. This system therefore **trusts the agent to report the signal honestly**.
-
-What the owner gives up is bounded on-chain:
-
-| Bounded by | Effect |
-|---|---|
-| `maxBps` | the agent can move at most a capped share of the deposit per trigger |
-| `safeAddr` | funds can only go to the address the owner set, never elsewhere |
-| `cooldownSecs` | the agent cannot trigger repeatedly in quick succession |
-| `windowSecs` | the window is fixed by the policy; the agent cannot substitute its own |
-| `guard` | only the owner-designated address can call `protect()` at all |
-| `revokeGuard` | the owner can set `guard = 0` and permanently disable the agent |
-
-A compromised or malicious agent can therefore cause a **bounded, rate-limited move of the
-owner's own funds to the owner's own safe address** — and nothing else. It cannot drain, cannot
-redirect, and cannot act after revocation. But it *can* trigger early by overstating
-`distributionUsd`, up to `maxBps` per cooldown period. That is the deliberate trade-off: the
-owner trades a bounded, capped loss for an uncapped risk of holding through a distribution event.
-
-`evidenceHash` is an **audit commitment, not an input to the decision**. The contract stores it
-and never checks it. Its purpose is after-the-fact verifiability: anyone can take the
-`keccak256` of the recorded Nansen response and prove it is the exact data that justified the
-trigger.
-
-```bash
-cast keccak 0x$(xxd -p < fixtures/_evidence/<file>.json | tr -d '\n')
-```
-
-What is *not* trusted: the `distributionUsd` value. What *is* trusted: the contract code (verified
-on Sourcify, `exact_match`) and the owner's own policy values.
-
----
-
-## The signal window: 6h, chosen before testing
-
-`timeframe` is a real parameter of the Nansen endpoint, and the window materially changes the
-answer for the same token:
-
-| WMON | 1h | 6h | 1d |
-|---|---|---|---|
-| summed net flow (smart_trader + top_pnl + whale) | −448.28 | **−6363.99** | **+3374.16** |
-| summed wallet count | 1 | **3** | 4 |
-
-**WMON reads as inflow at `1d` and outflow at `6h`.** The `6h` window was selected **before
-any test-trigger tuning** — it was chosen when the `nansen` CLI was found to silently drop
-`--days`, which forced the agent onto the endpoint's `1d` default, and the REST `timeframe`
-parameter was then introduced. The threshold (`1000`) was set independently and was not
-adjusted to make the 6h figure trip.
-
-Caveats stated plainly:
-- The decision cohort is **3 wallets**. `minWalletCount = 2` is satisfied, but a 3-wallet cohort
-  is a small sample and a single wallet can dominate the figure.
-- A 6h window is shorter than the documented **10–30 minute response cache** is long relative to,
-  so consecutive polls can return the same cached data.
-- `1d` and `6h` disagree in *sign*. Neither is "correct"; they are different questions.
-
----
-
-## Published data (what is and isn't in this repo)
-
-The agent records every Nansen response it reads, but **not every recorded response is
-published**:
-
-| Path | Published | Purpose |
-|---|---|---|
-| `fixtures/_sample/` | ✅ yes | one early + one late response per tracked token |
-| `fixtures/_evidence/` | ✅ yes (once populated) | the **exact** files whose `keccak256` is committed in on-chain `Protected` events |
-| `fixtures/*.json` (everything else) | ❌ no, gitignored | routine poll history, regenerated by running the recorder |
-
-`logs/`, `out/`, `cache/`, `broadcast/` and `lib/` are gitignored. No private key, API key or
-mnemonic appears anywhere in the repository or its git history — `.env` is ignored and only
-`.env.example` is committed.
-
-Verify any published evidence file against its on-chain hash with:
-
-```bash
-cast keccak 0x$(xxd -p < fixtures/_evidence/<file>.json | tr -d '\n')
-```
-
----
-
-## Testing
-
-```bash
+forge install foundry-rs/forge-std@v1.17.0
 forge test -vv
 ```
 
-8 tests covering: bps movement to safe address, guard-only access, below-threshold revert, bps cap
-revert, window mismatch revert, cooldown behaviour, guard revocation, owner withdrawal.
+The updated source hardens token handling and reentrancy and includes regression tests. Only fixed-balance ERC20 tokens with exact transfers are supported; fee-on-transfer and rebasing tokens are unsuitable. **It differs from the previously deployed contract.** Existing deployment verification applies to the historical bytecode, not these changes. A new deployment and explicit migration are necessary to use the hardened source; nothing here upgrades or migrates existing funds automatically.
 
----
+Historical Monad mainnet deployment (chain ID 143):
 
-## Honest limitations
+| Field | Recorded value |
+|---|---|
+| ExitGuard | `0x921621dC0de402adB75a84479046e5150c5a10D5` |
+| WMON | `0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A` |
+| Owner | `0x027b756B9B411c2838926534b3D5e119B8De8f2e` |
+| Agent | `0x68a691c461c54CE767C6d539022fa344397b9f31` |
 
-1. **The contract trusts the agent's `distributionUsd`.** It is bounded by `maxBps`, `cooldownSecs`
-   and `safeAddr`, but it cannot verify the number. See "Trust assumptions" above.
-2. **The decision cohort is 3 wallets.** Small sample; one wallet can dominate the figure.
-3. **Signal latency is minutes, not milliseconds.** Nansen caches responses 10–30 minutes, which
-   is long relative to a 6h window.
-4. **`1d` and `6h` disagree in sign for WMON** (+3374 vs −6364). The window is a modelling choice,
-   not a fact about the market.
-5. **No live `protect()` transaction has been executed yet.** The contract is deployed, verified,
-   funded and governed, and the position is currently TRIGGER ELIGIBLE, but no transaction has
-   been sent because the agent runs in DRY_RUN.
-6. **Monad smart-money label coverage is thin right now.** A probe of 111 non-stablecoin Monad
-   mainnet tokens found only 4 with a summed wallet count ≥ 2 across the three decision segments.
-7. **Two unrelated tokens showed a suspicious numeric coincidence** (`-4379.91` and `-4379.82`)
-   that is not yet explained. Both are 1–2 wallet cohorts and are treated as low confidence.
-8. **Single asset.** Only WMON has a position. cbBTC is tracked observationally and is an EIP-1967
-   proxy whose implementation is upgradeable by a third party.
+[Historical contract on MonadVision](https://monadvision.com/address/0x921621dC0de402adB75a84479046e5150c5a10D5). Current balances, policy, and activity must be read from the network, not inferred from this table. The read-only application is configured around this owner and asset; it does not manage arbitrary connected-wallet positions.
 
-## License
+## Configuration and operation
 
-MIT
+`.env.example` documents runtime settings. Keep credentials in the ignored root `.env`. Never put private keys or the Nansen key in `VITE_*` variables or frontend source.
+
+The local API provides `/api/latest`, `/api/history`, and `/api/protections`. An absent recorder snapshot is unavailable data, not zero distribution. Demo responses are explicitly labeled. `web/dist` is a static production build; a production host must route `/api` to the running read-only agent API. The Vite development proxy is not a production server.
+
+Run only one live decision worker per signer and deployment. Keep the recorder and worker supervised, persist fixtures and logs, retain evidence before operating live, monitor RPC/API failures, and provide MON for gas. Local files and the API are not a multi-user hosted backend. This repository has no external security audit.
+
+The deployment script is an operator tool. Review its inputs and target chain before signing; source changes alone do not alter `deployments.json` or existing funds. No credentials, paid API requests, mainnet operations, or hosting account are necessary for the historical demo and automated tests.
+
+## References checked during completion
+
+- [Nansen Flow Intelligence API](https://docs.nansen.ai/api/token-god-mode/flow-intelligence): endpoint, explicit timeframe, response fields.
+- [Monad network information](https://docs.monad.xyz/developer-essentials/network-information): mainnet chain ID and RPC configuration.
+- [Viem contract simulation](https://viem.sh/docs/contract/simulateContract): simulate before submitting a contract call.
+
+See [DEMO_SCRIPT.md](./DEMO_SCRIPT.md) for a reproducible presentation and [NANSEN_USAGE.md](./NANSEN_USAGE.md) for the original research notes. Those notes describe historical observations, not current market conditions.
+
+MIT license.

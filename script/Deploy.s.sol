@@ -17,8 +17,11 @@ contract Deploy is Script {
         string memory obj = "deployments";
         vm.serializeUint(obj, "chainId", block.chainid);
         string memory json = vm.serializeAddress(obj, "exitGuard", address(g));
-        vm.writeJson(json, "./deployments.json");
+        // Preserve the historical verified deployment and its asset/wallet metadata.
+        // Promote this candidate in application config only after a real broadcast
+        // receipt and verification; a dry run must not replace the active address.
+        vm.writeJson(json, "./deployments.json", ".latestDeploymentCandidate");
 
-        console.log("Wrote deployments.json (chainId %s)", block.chainid);
+        console.log("Wrote latestDeploymentCandidate (chainId %s); verify before activating", block.chainid);
     }
 }
