@@ -241,14 +241,14 @@ function Tripwire({
   return (
     <section className={`panel hero state-${status.cls}`} aria-labelledby="tw-title">
       <div className="panel-head">
-        <h2 id="tw-title">WMON selling pressure</h2>
+        <h2 id="tw-title"><span className="asset-icon">W</span> WMON signal</h2>
         <span className={`badge ${status.cls}`}>
           <i />
           {status.text}
         </span>
       </div>
 
-      <p className="headline">{headline}</p>
+      <div className="signal-summary"><span className="eyebrow">DISTRIBUTION SIGNAL</span><div className="signal-value">{vault?.distributionUsd != null ? usd(dist) : "—"}<span>USD</span></div><p className="headline">{headline}</p></div>
 
       <div className="meter" aria-label={`Selling pressure ${usd(dist)} against a line of ${usd(thr)}`}>
         <div className="meter-track">
@@ -662,6 +662,12 @@ function Watchlist({ tokens, minWallets }: { tokens: Tok[]; minWallets: number }
 /* ------------------------------------------------------------------ app */
 
 export default function App() {
+  const [activeSection, setActiveSection] = useState(() => window.location.hash.slice(1) || "overview");
+  useEffect(() => {
+    const onHash = () => setActiveSection(window.location.hash.slice(1) || "overview");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const now = useNow();
 
   const { data: latest, error: agentError } = usePoll<Latest>("/api/latest", 10000);
@@ -719,7 +725,7 @@ export default function App() {
           <Mark />
           <div>
             <h1>Nanpolis</h1>
-            <p>Smart-money monitoring and exit protection</p>
+            <p>ONCHAIN INTELLIGENCE</p>
           </div>
         </div>
         <div className="top-right">
@@ -735,7 +741,26 @@ export default function App() {
         </div>
       </header>
 
-      <p className="context-note">Read-only dashboard · Owner <a href={`${EXPLORER}/address/${OWNER}`} target="_blank" rel="noreferrer">{short(OWNER)}</a> · {latest?.mode ? `${latest.mode} mode` : "Execution mode unknown"}. This dashboard does not request wallet access.</p>
+      <nav className="workspace-nav" aria-label="Dashboard sections">
+        {(["overview", "signals", "activity"] as const).map((section, index) => (
+          <a key={section} className={activeSection === section ? "nav-active" : ""} aria-current={activeSection === section ? "location" : undefined} href={`#${section}`}>
+            {section[0].toUpperCase() + section.slice(1)}{activeSection === section && <span>0{index + 1}</span>}
+          </a>
+        ))}
+        <a className="nav-explorer" href={`${EXPLORER}/address/${EXITGUARD}`} target="_blank" rel="noreferrer">View contract <Ext /></a>
+      </nav>
+
+      <section className="page-intro" id="overview">
+        <div><p className="eyebrow"><span /> THE INTELLIGENCE LAYER</p><h2>Stay ahead.<br /><span>Stay in control.</span></h2><p className="intro-copy">Follow smart money. Monitor exposure. Keep the exit rules yours.</p></div>
+        <div className="protocol-stamp" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit orbit-three" /><div className="orbit-core">N<span>143</span></div><span className="orbit-label">MONAD / EXIT GUARD</span></div>
+      </section>
+      <div className="metrics-strip">
+        <div><span>MONITORED POSITION</span><strong>{state ? formatUnits(state.deposit, 18) : "—"}<small>WMON</small></strong><p>On-chain vault balance</p></div>
+        <div><span>RECORDED NET FLOW</span><strong className={vault?.netFlowUsd != null && vault.netFlowUsd >= 0 ? "n-pos" : "n-neg"}>{vault?.netFlowUsd != null ? usdSigned(vault.netFlowUsd) : "—"}</strong><p>{latest?.demo ? "Historical Nansen sample" : "Latest Nansen reading"}</p></div>
+        <div><span>TRANSFER LIMIT</span><strong>{state ? `${state.policy.maxBps / 100}%` : "—"}<small>/ trigger</small></strong><p>Enforced by owner policy</p></div>
+        <div><span>EXECUTION</span><strong className="mode-value">{latest?.mode ?? "Unknown"}<i /></strong><p>{latest?.mode === "LIVE" ? "Agent reports live mode" : "No live execution confirmed"}</p></div>
+      </div>
+      <p className="context-note">Read-only · Owner <a href={`${EXPLORER}/address/${OWNER}`} target="_blank" rel="noreferrer">{short(OWNER)}</a> · {latest?.mode ? `${latest.mode} mode` : "Execution mode unknown"}. This dashboard does not request wallet access.</p>
       {latest?.note && <p className="banner">{latest.note}</p>}
       {!latest?.note && latest?.mode !== "LIVE" && <p className="banner">{latest?.mode === "REPLAY" ? "Historical replay: no transactions are sent." : "Live execution is not confirmed. The dashboard does not send transactions."}</p>}
       {agentError && <p className="banner" role="status">Agent unavailable: {agentError} Start the agent API with the configured PORT. Any retained readings are historical.</p>}
@@ -743,13 +768,13 @@ export default function App() {
       {historyError && <p className="banner">Chart history unavailable. Showing readings collected in this browser session.</p>}
       {chainErr && <p className="banner">Could not read the contract: {chainErr}</p>}
 
-      <main>
+      <main id="signals">
         <div className="row hero-row">
           <Tripwire vault={vault} state={state} latest={latest} maxMove={maxMove} coolMin={coolMin} unavailable={unavailable} />
           <VaultPanel vault={vault} state={state} protections={protections} now={now} />
         </div>
 
-        <ProtectionLog protections={protections} decimals={18} />
+        <div id="activity"><ProtectionLog protections={protections} decimals={18} /></div>
 
         <div className="row lower-row">
           <section className="panel chart-panel" aria-labelledby="c-title">
